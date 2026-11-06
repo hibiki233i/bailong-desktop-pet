@@ -1,6 +1,6 @@
 import json,os,tempfile,unittest
 os.environ['QT_QPA_PLATFORM']='offscreen'
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
 from unittest.mock import Mock
 from PySide6.QtWidgets import QApplication
@@ -65,6 +65,15 @@ class Reader(unittest.TestCase):
         rows=usage_windows(self.home)
         self.assertIn('输入 120 · 输出 7 · 1 次回复',rows[0]['text'])
         self.assertTrue(any('不是账户剩余额度' in row['text'] for row in rows))
+    def test_usage_keeps_the_final_report_for_a_message(self):
+        folder=Path(self.home)/'projects/p';folder.mkdir(parents=True)
+        now=datetime.now(timezone.utc);later=now+timedelta(seconds=2)
+        early=assistant([],timestamp=now.isoformat(),usage={'input_tokens':100,'output_tokens':1})
+        final=assistant([],timestamp=later.isoformat(),usage={'input_tokens':100,'output_tokens':50})
+        (folder/'a.jsonl').write_text(early+final,encoding='utf-8')
+        self.assertIn('输入 100 · 输出 50 · 1 次回复',usage_windows(self.home,now=later)[0]['text'])
+        (folder/'a.jsonl').write_text(final+early,encoding='utf-8')
+        self.assertIn('输入 100 · 输出 50 · 1 次回复',usage_windows(self.home,now=later)[0]['text'])
 
 class FakePet:
     hub=None

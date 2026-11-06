@@ -238,8 +238,7 @@ def usage_windows(home=None, cancel=None, now=None):
     now = now or datetime.now().astimezone()
     windows = {'最近 5 小时': now - timedelta(hours=5), '今天': now.replace(hour=0, minute=0, second=0, microsecond=0)}
     earliest = min(windows.values()).timestamp()
-    totals = {name: [0, 0, 0] for name in windows}
-    seen = set()
+    latest = {}
     for path in root.glob('*/*.jsonl'):
         if cancel and cancel.is_set():
             break
@@ -257,19 +256,23 @@ def usage_windows(home=None, cancel=None, now=None):
                         stamp = datetime.fromisoformat(record['timestamp'].replace('Z', '+00:00'))
                     except (ValueError, KeyError, TypeError):
                         continue
-                    identity = message.get('id')
-                    if identity in seen or stamp.timestamp() < earliest:
+                    identity = message.get('id') or record.get('uuid')
+                    if stamp.timestamp() < earliest:
                         continue
-                    seen.add(identity)
-                    usage = message.get('usage') or {}
-                    fresh = int(usage.get('input_tokens') or 0) + int(usage.get('cache_creation_input_tokens') or 0)
-                    for name, start in windows.items():
-                        if stamp >= start:
-                            totals[name][0] += fresh
-                            totals[name][1] += int(usage.get('output_tokens') or 0)
-                            totals[name][2] += 1
+                    # One message can be logged several times, and its counts are only final in the last record.
+                    if identity not in latest or stamp >= latest[identity][0]:
+                        usage = message.get('usage') or {}
+                        fresh = int(usage.get('input_tokens') or 0) + int(usage.get('cache_creation_input_tokens') or 0)
+                        latest[identity] = (stamp, fresh, int(usage.get('output_tokens') or 0))
         except OSError:
             continue
+    totals = {name: [0, 0, 0] for name in windows}
+    for stamp, fresh, output in latest.values():
+        for name, start in windows.items():
+            if stamp >= start:
+                totals[name][0] += fresh
+                totals[name][1] += output
+                totals[name][2] += 1
     rows = [{'name': name, 'text': f'输入 {format_tokens(value[0])} · 输出 {format_tokens(value[1])} · {value[2]} 次回复'} for name, value in totals.items()]
     rows.append({'name': '说明', 'text': '这是本机记录的用量，不是账户剩余额度。'})
     return rows
