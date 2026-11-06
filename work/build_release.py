@@ -12,7 +12,7 @@ edition='-webm' if webm else ''
 stage=OUT/f'release-v{VERSION}{edition}'
 source=stage/'repository/bailong-desktop-pet';portable=stage/'windows/BailongPet'
 source.mkdir(parents=True,exist_ok=True);(source/'app').mkdir(exist_ok=True)
-modules=['platform_support.py','mac_autostart.py','test_platform_support.py','test_preferences.py','desktop_task_sync.py','test_desktop_task_sync.py','pet.py','movement.py','test_movement.py','quota.py','autostart.py','prepare_assets.py','test_pet.py','selftest.py','version.py','test_quota.py','chat_backend.py','chat_ui.py','test_chat.py','desktop_visibility.py','test_visibility.py','test_session_reuse.py','test_task_notifications.py']
+modules=['platform_support.py','frame_store.py','characters.py','claude_status.py','test_claude_status.py','claude_limits.py','test_claude_limits.py','pet_hub.py','control_panel.py','test_pet_hub.py','asset_checks.py','mac_autostart.py','test_platform_support.py','test_preferences.py','desktop_task_sync.py','test_desktop_task_sync.py','pet.py','movement.py','test_movement.py','quota.py','autostart.py','prepare_assets.py','test_pet.py','selftest.py','version.py','test_quota.py','chat_backend.py','chat_ui.py','test_chat.py','desktop_visibility.py','test_visibility.py','test_session_reuse.py','test_task_notifications.py']
 modules.append('video_frames.py')
 for name in modules:shutil.copy2(ROOT/'app'/name,source/'app'/name)
 shutil.copytree(ROOT/'app/sounds',source/'app/sounds',dirs_exist_ok=True)

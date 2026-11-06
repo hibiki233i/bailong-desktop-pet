@@ -1,21 +1,23 @@
-import json, random, sys, time, threading, gzip, os
+import json, random, sys, time, threading, os
 from pathlib import Path
 from collections import OrderedDict
 from datetime import datetime
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QPoint, QPointF, QRect, QRectF, QSize, QSettings, QEvent
 from PySide6.QtGui import QImage, QPixmap, QPainter, QRegion, QCursor, QIcon, QTransform
-from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QProgressBar, QMenu, QMessageBox, QProgressDialog, QPushButton, QSystemTrayIcon, QTextBrowser, QSlider, QDialog, QCheckBox
+from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QProgressBar, QMenu, QMessageBox, QPushButton, QSystemTrayIcon, QTextBrowser, QSlider, QDialog, QCheckBox
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from quota import read_quota, quota_windows
 from version import VERSION
 from movement import plan_movement, movement_fraction
+from characters import CODEX
+from frame_store import ClipFrames, decode_into, start_decode
 
-from platform_support import resource_root,state_root,configure_mac_window
+from platform_support import resource_root,state_root,configure_mac_app,configure_mac_window,UI_FONT
 ROOT=resource_root()
 STATE_ROOT=state_root()
-ASSETS=ROOT/'outputs/白龙桌宠素材'
 FLAGS=Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.Tool
+# The Windows build has no shadow; macOS would add one around the character's outline.
+PET_FLAGS=FLAGS|Qt.WindowType.NoDropShadowWindowHint if sys.platform=='darwin' else FLAGS
 
 def clamp_position(position,size,area):
     """Keep the full pet window inside one monitor's usable rectangle."""
@@ -27,22 +29,23 @@ def clamp_position(position,size,area):
 class QuotaWorker(QThread):
     ready=Signal(object)
     failed=Signal(str)
-    def __init__(self,parent=None):
-        super().__init__(parent);self.cancel=threading.Event()
+    def __init__(self,reader,parent=None):
+        super().__init__(parent);self.reader=reader;self.cancel=threading.Event()
     def run(self):
-        try: self.ready.emit(quota_windows(read_quota(cancel=self.cancel)))
+        try: self.ready.emit(self.reader(self.cancel))
         except Exception as error: self.failed.emit(str(error))
 
 class Bubble(QWidget):
     dismiss_requested=Signal()
     def __init__(self):
         super().__init__(None, FLAGS)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.scale_percent=100;self.base_width=256;self.is_task_bubble=False;self.is_size_preview=False
         self.layout=QVBoxLayout(self); self.layout.setContentsMargins(13,10,13,10);self.layout.setSpacing(5)
         self.setFixedWidth(256)
-        self.setStyleSheet('QLabel {color:#332644;font-size:12px;font-family:"Microsoft YaHei","Segoe UI";} QProgressBar {background:#eee8f5;border:1px solid #c8b5dc;border-radius:7px;height:14px;} QProgressBar::chunk {background:#a47bc9;border-radius:6px;}')
+        self.setStyleSheet('QLabel {color:#332644;font-size:12px;font-family:'+UI_FONT+';} QProgressBar {background:#eee8f5;border:1px solid #c8b5dc;border-radius:7px;height:14px;} QProgressBar::chunk {background:#a47bc9;border-radius:6px;}')
         self.close_button=QPushButton('×',self);self.close_button.setFixedSize(24,24)
         self.close_button.setToolTip('关闭气泡')
         self.close_button.setStyleSheet('QPushButton {color:#776783;background:transparent;border:0;border-radius:10px;font-size:19px;} QPushButton:hover {background:#eee5f7;color:#503768;}')
@@ -56,10 +59,10 @@ class Bubble(QWidget):
         self.scale_percent=max(50,min(150,int(value)));s=self.scale_percent/100
         self.setFixedWidth(round(self.base_width*s))
         self.layout.setContentsMargins(round(13*s),round(10*s),round(13*s),round(10*s));self.layout.setSpacing(max(2,round(5*s)))
-        self.setStyleSheet(f'QLabel {{color:#332644;font-size:{round(12*s)}px;font-family:"Microsoft YaHei","Segoe UI";}} QPushButton {{font-size:{round(12*s)}px;}} QProgressBar {{background:#eee8f5;border:1px solid #c8b5dc;border-radius:5px;height:{round(14*s)}px;}} QProgressBar::chunk {{background:#a47bc9;border-radius:5px;}}')
+        self.setStyleSheet(f'QLabel {{color:#332644;font-size:{round(12*s)}px;font-family:{UI_FONT};}} QPushButton {{font-size:{round(12*s)}px;}} QProgressBar {{background:#eee8f5;border:1px solid #c8b5dc;border-radius:5px;height:{round(14*s)}px;}} QProgressBar::chunk {{background:#a47bc9;border-radius:5px;}}')
         for view in self.findChildren(QTextBrowser):
             view.setFixedHeight(round((view.property('baseHeight') or 76)*s))
-            view.setStyleSheet(f'QTextBrowser {{color:#332644;background:transparent;border:0;font-size:{round(12*s)}px;font-family:"Microsoft YaHei","Segoe UI";}}')
+            view.setStyleSheet(f'QTextBrowser {{color:#332644;background:transparent;border:0;font-size:{round(12*s)}px;font-family:{UI_FONT};}}')
         self.close_button.setFixedSize(max(16,round(24*s)),max(16,round(24*s)))
         if self.layout.count() and isinstance(self.layout.itemAt(0).widget(),QLabel):
             self.layout.itemAt(0).widget().setContentsMargins(0,0,self.close_button.width()+4,0)
@@ -95,7 +98,7 @@ class Bubble(QWidget):
         self.clear();self.label(title)
         self.result_title=self.layout.itemAt(0).widget()
         result=QTextBrowser();result.setPlainText(text);result.setOpenLinks(False)
-        result.setStyleSheet('QTextBrowser {color:#332644;background:transparent;border:0;font-size:12px;font-family:"Microsoft YaHei","Segoe UI";}')
+        result.setStyleSheet('QTextBrowser {color:#332644;background:transparent;border:0;font-size:12px;font-family:'+UI_FONT+';}')
         base_height=150 if len(text)>180 or len(text.splitlines())>6 else 76
         result.setProperty('baseHeight',base_height);result.setFixedHeight(base_height)
         self.result_view=result
@@ -103,14 +106,16 @@ class Bubble(QWidget):
         button=QPushButton('详情');button.setStyleSheet('color:#60358c;background:#eee5f7;border:0;border-radius:7px;padding:7px;')
         button.clicked.connect(lambda checked=False:details());self.layout.addWidget(button)
         self.set_scale_percent(self.scale_percent);self.show()
-    def quota(self,windows):
+    def quota(self,windows,title='Codex 剩余额度'):
         self.is_size_preview=False
         self.is_task_bubble=False
         self.is_task_progress=False
         self.is_quota_result=True
         self.base_width=256;self.setFixedWidth(round(256*self.scale_percent/100))
-        self.clear();self.label('Codex 剩余额度')
+        self.clear();self.label(title)
         for window in windows:
+            if 'text' in window:
+                self.label(window['name']+' · '+window['text']);continue
             value=window['remaining']
             self.label(window['name']+' · '+(f'剩余 {value:g}%' if value is not None else '暂未提供'))
             bar=QProgressBar();bar.setRange(0,100)
@@ -126,17 +131,19 @@ class Bubble(QWidget):
         self.layout.addWidget(blank);self.set_scale_percent(self.scale_percent);self.show()
 
 class Pet(QWidget):
-    def __init__(self):
-        super().__init__(None,FLAGS)
+    def __init__(self,character=CODEX,hub=None):
+        super().__init__(None,PET_FLAGS)
+        self.character=character;self.hub=hub;self.assets=ROOT/character.assets
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setWindowTitle('白龙桌宠');self.setFixedSize(256,256)
-        self.manifest=json.loads((ASSETS/'素材清单.json').read_text(encoding='utf-8'))
+        self.setWindowTitle(character.title+'桌宠');self.setFixedSize(256,256)
+        self.manifest=json.loads((self.assets/'素材清单.json').read_text(encoding='utf-8'))
         self.variants=[v for v in self.manifest['variants'] if self.asset_path(v).is_file()]
         self.idles=[self.manifest['idle']]+self.manifest.get('additionalIdleAnimations',[])[:1]
         self.extra_idles=[v for v in self.manifest.get('additionalIdleAnimations',[]) if v.get('id') in ('idle03','idle04','idle05','idle06') and self.asset_path(v).is_file()]
         self.next_leisure_group='idle';self.next_leisure_at=time.monotonic()+15.0
-        self.cache=OrderedDict();self.pinned_frames={};self.frames=[];self.current=None;self.mode='idle';self.index=0
+        self.cache=OrderedDict();self.pinned_frames={};self.frames=[];self.held_frame=None;self.current=None;self.mode='idle';self.index=0
         self.frame_size=min(512,max(256,round(256*max(s.devicePixelRatio() for s in QApplication.screens()))))
         self.transition=None
         self.bubble=Bubble();self.generation=0;self.worker=None;self.quota_inflight=False;self.dragging=False;self.last_click=None
@@ -145,6 +152,7 @@ class Pet(QWidget):
         self.task_active=False
         self.manual_hidden=False;self.fullscreen_hidden=False;self.hidden_since=None
         self.settings=QSettings('BailongPet','DesktopPet')
+        if character.settings_group:self.settings.beginGroup(character.settings_group)
         self.bubble_percent=max(50,min(150,self.settings.value('bubblePercent',100,type=int)))
         self.task_bubbles_disabled=self.settings.value('taskBubblesDisabled',False,type=bool)
         self.sound_disabled=self.settings.value('soundDisabled',False,type=bool)
@@ -166,23 +174,15 @@ class Pet(QWidget):
         self.bubble_timer=QTimer(self);self.bubble_timer.setSingleShot(True);self.bubble_timer.timeout.connect(self.dismiss_bubble)
         self.tick=QTimer(self);self.tick.setTimerType(Qt.TimerType.PreciseTimer);self.tick.setInterval(16);self.tick.timeout.connect(self.animate)
         area=QApplication.primaryScreen().availableGeometry()
-        self.move(self.constrained_position(QPoint(area.right()-360,area.bottom()-340)))
+        self.move(self.constrained_position(QPoint(area.right()-360-character.home_offset,area.bottom()-340)))
         for screen in QApplication.screens():self.watch_screen(screen)
         QApplication.instance().screenAdded.connect(self.watch_screen)
         QApplication.instance().screenRemoved.connect(lambda screen:QTimer.singleShot(0,self.ensure_on_screen))
+        # The default idle is what every other clip falls back to, so it stays resident.
+        # Everything else decodes when first played, which keeps start-up and memory small.
+        rest=self.idles[0];key=str(self.asset_path(rest))
+        clip=ClipFrames(1);decode_into(clip,self.asset_path(rest),self.frame_size,self.packed_cache(rest));self.pinned_frames[key]=clip.wait();self.held_frame=clip[0]
         self.idle()
-        # User prefers immediate interaction: decode all actions once at startup
-        # and retain them even while hidden, without running the animation timer.
-        items=self.idles+self.extra_idles+self.variants+self.movement_slots+[v for v in self.work_slots if v and self.asset_path(v).is_file()]+[self.manifest[name] for name in ('dragAnimation','landingAnimation','quotaAnimation') if self.manifest.get(name)]
-        items += [self.return_transition_item(v) for v in self.variants if v.get('returnTransition')]
-        progress=None
-        if QApplication.platformName()!='offscreen':
-            progress=QProgressDialog('主人，等我整理好裙摆和小翅膀，马上就来…','',0,len(items))
-            progress.setCancelButton(None);progress.setWindowTitle('白龙桌宠');progress.setMinimumDuration(0);progress.show()
-        for i,item in enumerate(items):
-            key=str(self.asset_path(item));self.pinned_frames[key]=self.load(item);self.cache.pop(key,None)
-            if progress:progress.setValue(i+1);QApplication.processEvents()
-        if progress:progress.close()
         self.transition=None
         self.started=time.monotonic();self.tick.start()
         self.last_interaction=self.started
@@ -195,13 +195,17 @@ class Pet(QWidget):
         self.visibility_timer=QTimer(self);self.visibility_timer.setInterval(500)
         self.visibility_timer.timeout.connect(self.check_fullscreen)
         if QApplication.platformName()!='offscreen':self.visibility_timer.start()
-        from desktop_task_sync import DesktopTaskSync
-        self.desktop_sync=DesktopTaskSync(self)
+        self.desktop_sync=character.make_sync(self)
         if QApplication.platformName()!='offscreen':QTimer.singleShot(1500,self.desktop_sync.start)
+    def resting_pixmap(self):
+        # The default idle's first frame, independent of the current action.
+        return QPixmap.fromImage(self.pinned_frames[str(self.asset_path(self.idles[0]))][0])
     def setup_tray(self):
-        # Use the default idle's first frame, independent of the current action.
-        icon=QIcon(self.pinned_frames[str(self.asset_path(self.idles[0]))][0])
+        icon=QIcon(self.resting_pixmap())
         self.setWindowIcon(icon)
+        if self.hub:
+            # One menu bar icon serves every pet.
+            self.tray=self.hub.tray;self.tray_menu=self.hub.tray_menu;return
         self.tray=QSystemTrayIcon(icon,self);self.tray.setToolTip('GPT白龙娘桌宠')
         self.tray_menu=self.context_menu();self.tray.setContextMenu(self.tray_menu)
         self.tray_menu.aboutToShow.connect(self.refresh_tray_menu)
@@ -312,9 +316,10 @@ class Pet(QWidget):
         self.settings.setValue('autoMovementDisabled',disabled)
     def set_manual_hidden(self,hidden):
         self.note_interaction()
-        if hidden and not self.tray.isVisible():
+        if hidden and not self.hub and not self.tray.isVisible():
             self.say('主人，托盘暂时没准备好，我先留在这里陪你。');return
         self.manual_hidden=hidden;self.apply_visibility()
+        if self.hub:self.hub.remember_visibility(self)
     def apply_visibility(self):
         if self.desktop_hidden():
             if self.hidden_since is None:self.hidden_since=time.monotonic()
@@ -326,9 +331,9 @@ class Pet(QWidget):
         else:
             if self.hidden_since is not None:
                 self.started+=time.monotonic()-self.hidden_since;self.hidden_since=None
-            self.ensure_on_screen();self.show();self.tick.start()
+            self.ensure_on_screen();self.show();configure_mac_window(self);self.tick.start()
             self.sync_dialogue_visibility()
-        if hasattr(self,'tray'):
+        if hasattr(self,'tray') and not self.hub:
             state='已隐藏' if self.manual_hidden else ('全屏时自动隐藏' if self.fullscreen_hidden else '正在陪伴主人')
             self.tray.setToolTip('GPT白龙娘桌宠 · '+state)
     def check_fullscreen(self):
@@ -402,44 +407,27 @@ class Pet(QWidget):
         if getattr(self,'chat',None):self.chat.position()
     def asset_path(self,item):
         # Optional playbackFile allows future formats without changing the manifest's video source.
-        return ASSETS/(item.get('playbackFile') or item['file'].replace('.webm','.webp'))
+        return self.assets/(item.get('playbackFile') or item['file'].replace('.webm','.webp'))
+    def packed_cache(self,item):
+        # Only the bundled Codex set has a prepared cache, and its clip ids are not unique across sets.
+        return ROOT/'app/cache'/f'{item["id"]}-hq.rgba.gz' if self.character is CODEX else None
     def load(self,item):
         path=self.asset_path(item);key=str(path)
         if key in self.pinned_frames:return self.pinned_frames[key]
-        if key in self.cache: self.cache.move_to_end(key);return self.cache[key]
-        frames=[]
-        packed=ROOT/'app/cache'/f'{item["id"]}-hq.rgba.gz';metadata=packed.with_suffix('.json')
-        if packed.is_file() and metadata.is_file():
-            meta=json.loads(metadata.read_text(encoding='utf-8'));stat=path.stat()
-            if meta['sourceSize']==stat.st_size and meta['sourceMtime']==stat.st_mtime_ns:
-                raw=gzip.decompress(packed.read_bytes());stride=512*512*4
-                if len(raw)==meta['frames']*stride:
-                    for offset in range(0,len(raw),stride):
-                        pixmap=QPixmap.fromImage(QImage(raw[offset:offset+stride],512,512,2048,QImage.Format.Format_RGBA8888).copy())
-                        frames.append(pixmap.scaled(self.frame_size,self.frame_size,Qt.AspectRatioMode.IgnoreAspectRatio,Qt.TransformationMode.SmoothTransformation) if self.frame_size!=512 else pixmap)
-        if frames:
-            self.cache[key]=frames
-            while len(self.cache)>2:self.cache.popitem(last=False)
-            return frames
-        if path.suffix.lower()=='.webm':
-            from video_frames import rgba_frames
-            for raw in rgba_frames(path,self.frame_size):
-                qimage=QImage(raw,self.frame_size,self.frame_size,self.frame_size*4,QImage.Format.Format_RGBA8888).copy()
-                frames.append(QPixmap.fromImage(qimage))
-        else:
-            with Image.open(path) as source:
-                for i in range(source.n_frames):
-                    source.seek(i);im=source.convert('RGBA').resize((self.frame_size,self.frame_size),Image.Resampling.LANCZOS)
-                    raw=im.tobytes();qimage=QImage(raw,self.frame_size,self.frame_size,self.frame_size*4,QImage.Format.Format_RGBA8888).copy()
-                    frames.append(QPixmap.fromImage(qimage))
-        if not frames: raise RuntimeError('动画没有可播放帧：'+str(path))
-        self.cache[key]=frames
-        while len(self.cache)>2:self.cache.popitem(last=False)
-        return frames
+        if key in self.cache:self.cache.move_to_end(key);return self.cache[key]
+        clip=start_decode(path,self.frame_size,item.get('durationMs',4000)*24/1000,self.packed_cache(item))
+        self.cache[key]=clip
+        for old in list(self.cache):
+            if len(self.cache)>2 and old!=key and self.cache[old] is not self.frames:self.cache.pop(old).cancelled=True
+        return clip
+    def release_other_clips(self):
+        # A clip re-decodes in 0.3 s in the background, far cheaper than holding 100 MiB for it.
+        for key in [key for key,clip in self.cache.items() if clip is not self.frames]:self.cache.pop(key).cancelled=True
     def play(self,item,mode):
         if self.dock_edge and mode!='idle':return
         if self.movement_plan is not None:self.finish_movement()
         self.frames=self.load(item);self.current=item;self.mode=mode;self.index=0;self.started=time.monotonic();self.update_frame()
+        self.release_other_clips()
         if getattr(self,'hidden_since',None) is not None:self.hidden_since=self.started
         self.transition=None
         self.sync_dialogue_visibility()
@@ -490,7 +478,11 @@ class Pet(QWidget):
         else:self.idle()
     def task_finished(self):
         self.task_active=False
-        if self.mode in ('work-start','working','idle'):self.idle()
+        if self.mode in ('work-start','working','idle','asking'):self.idle()
+    def task_waiting(self,text,details):
+        asking=self.manifest.get('askAnimation')
+        if asking and not self.dock_edge and self.mode!='movement':self.play(asking,'asking')
+        self.task_progress('主人，有个情况要告诉你。',text,details)
     def return_transition_item(self,item):
         transition=item['returnTransition']
         return {'id':'return-'+item['id'],'file':transition['file'],
@@ -521,11 +513,19 @@ class Pet(QWidget):
             elif self.mode=='return-idle':self.play(self.idles[0],'idle')
             else:self.idle()
             return
-        index=min(len(self.frames)-1,int(elapsed/duration*len(self.frames)))
+        if getattr(self.frames,'error',None) and not self.frames:
+            # A clip that cannot be decoded must not leave the pet frozen.
+            self.cache.pop(str(self.asset_path(self.current)),None);self.play(self.idles[0],'idle');return
+        total=getattr(self.frames,'total',len(self.frames))
+        index=max(0,min(len(self.frames)-1,int(elapsed/duration*total)))
         if self.transition:self.update()
         if index!=self.index:self.index=index;self.update_frame()
+    def visible_frame(self):
+        # A new clip has no frames for its first few milliseconds, so keep showing the last one.
+        if self.frames:self.held_frame=self.frames[min(self.index,len(self.frames)-1)]
+        return self.held_frame
     def paintEvent(self,event):
-        if self.frames:
+        if self.visible_frame() is not None:
             painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             self.draw_frame(painter,QRectF(self.rect()))
     def draw_frame(self,painter,canvas):
@@ -545,7 +545,7 @@ class Pet(QWidget):
             # Match the reference's 55% exposure of the rotated visible bounds,
             # rather than anchoring a guessed head crop to a square viewport.
             stable=self.pinned_frames[str(self.asset_path(self.idles[0]))][0]
-            if not hasattr(self,'dock_visible_bounds'):self.dock_visible_bounds=QRegion(stable.mask()).boundingRect()
+            if not hasattr(self,'dock_visible_bounds'):self.dock_visible_bounds=QRegion(QPixmap.fromImage(stable).mask()).boundingRect()
             bounds=self.dock_visible_bounds
             local=QRectF(bounds.x()*w/stable.width(),bounds.y()*h/stable.height(),bounds.width()*w/stable.width(),bounds.height()*h/stable.height())
             rotated=rotation.mapRect(local);exposure=1-.45*t
@@ -560,7 +560,7 @@ class Pet(QWidget):
         scale=self.current.get('renderScale',1.0);offset=self.current.get('renderOffset',[0,0])
         width,height=canvas.width()*scale,canvas.height()*scale
         target=QRectF(canvas.x()+(canvas.width()-width)/2+canvas.width()*offset[0],canvas.y()+canvas.height()-height+canvas.height()*offset[1],width,height)
-        frame=self.frames[self.index];painter.drawPixmap(target,frame,QRectF(frame.rect()))
+        frame=self.visible_frame();painter.drawImage(target,frame,QRectF(frame.rect()))
         painter.restore()
     def snapshot_frame(self):
         pixmap=QPixmap(self.frame_size,self.frame_size);pixmap.fill(Qt.GlobalColor.transparent)
@@ -631,6 +631,7 @@ class Pet(QWidget):
         # Play directly so the celebration's interaction line is never shown.
         self.task_result('主人，完成啦！',text,details)
     def chat_controller(self):
+        if not self.character.chat:return None
         if self.chat is None:
             from chat_ui import ChatController
             try:self.chat=ChatController(self)
@@ -649,6 +650,8 @@ class Pet(QWidget):
         if controller:controller.open_history()
     def context_menu(self):
         menu=QMenu(self)
+        if self.hub:
+            menu.addAction('控制面板…',self.hub.show_panel);menu.addSeparator()
         if self.dock_edge:menu.addAction('展开桌宠',self.begin_undock)
         action=menu.addAction('显示桌宠' if self.manual_hidden or self.fullscreen_hidden else '隐藏桌宠')
         action.triggered.connect(lambda checked=False:self.set_manual_hidden(not self.manual_hidden if not self.fullscreen_hidden else False))
@@ -658,8 +661,9 @@ class Pet(QWidget):
         automatic=menu.addAction('全屏时自动隐藏');automatic.setCheckable(True)
         automatic.setChecked(self.auto_hide_fullscreen);automatic.toggled.connect(self.set_auto_hide_fullscreen)
         menu.addSeparator()
-        menu.addAction('关闭对话模式' if self.chat and self.chat.enabled else '打开对话模式',self.toggle_chat)
-        menu.addAction('查看历史对话',self.open_history)
+        if self.character.chat:
+            menu.addAction('关闭对话模式' if self.chat and self.chat.enabled else '打开对话模式',self.toggle_chat)
+            menu.addAction('查看历史对话',self.open_history)
         menu.addAction('对话框大小…',self.show_bubble_settings)
         menu.addSeparator()
         interaction=QMenu('互动差分动画',menu);menu.addMenu(interaction)
@@ -689,9 +693,17 @@ class Pet(QWidget):
         menu.addSeparator();menu.addAction('桌宠大小…',self.show_size_dialog)
         muted=menu.addAction('禁用音效');muted.setCheckable(True)
         muted.setChecked(self.sound_disabled);muted.toggled.connect(self.set_sound_disabled)
+        if sys.platform=='darwin':
+            from mac_autostart import is_enabled
+            startup=menu.addAction('随ChatGPT或Claude自动启动');startup.setCheckable(True)
+            startup.setChecked(is_enabled());startup.toggled.connect(self.set_mac_autostart)
         menu.addSeparator()
-        menu.addAction('退出桌宠',self.close)
+        menu.addAction('退出桌宠',self.hub.quit if self.hub else self.close)
         return menu
+    def set_mac_autostart(self,enabled):
+        from mac_autostart import enable,disable
+        try:(enable if enabled else disable)()
+        except Exception as error:QMessageBox.warning(None,'白龙桌宠','无法修改自动启动：'+str(error))
     def set_sound_disabled(self,disabled):
         self.sound_disabled=bool(disabled);self.settings.setValue('soundDisabled',self.sound_disabled)
     def set_task_bubbles_disabled(self,disabled):
@@ -706,6 +718,7 @@ class Pet(QWidget):
     def show_bubble_settings(self):
         if not hasattr(self,'bubble_settings_dialog'):
             dialog=QDialog(self,Qt.WindowType.Tool|Qt.WindowType.WindowStaysOnTopHint)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
             dialog.setWindowTitle('对话框大小与提醒');layout=QVBoxLayout(dialog)
             layout.setContentsMargins(18,16,18,16);layout.setSpacing(14)
             label=QLabel(dialog);slider=QSlider(Qt.Orientation.Horizontal,dialog)
@@ -737,6 +750,7 @@ class Pet(QWidget):
     def show_size_dialog(self):
         if not hasattr(self,'size_dialog'):
             dialog=QDialog(self,Qt.WindowType.Tool|Qt.WindowType.WindowStaysOnTopHint)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
             dialog.setWindowTitle('调节桌宠大小');layout=QVBoxLayout(dialog)
             layout.setContentsMargins(18,16,18,16);layout.setSpacing(14)
             label=QLabel(dialog);slider=QSlider(Qt.Orientation.Horizontal,dialog)
@@ -840,13 +854,14 @@ class Pet(QWidget):
         if self.quota_inflight:
             # Repeated requests share the in-flight read; delivery uses the newest generation.
             self.quota_generation=token;return
-        self.quota_generation=token;self.quota_inflight=True;self.worker=QuotaWorker(self)
+        self.quota_generation=token;self.quota_inflight=True;self.worker=QuotaWorker(self.character.read_quota,self)
         self.worker.ready.connect(self.quota_ready);self.worker.failed.connect(self.quota_failed);self.worker.start()
     def quota_ready(self,windows):
         self.quota_inflight=False
         if self.speech_hidden():return
         if self.quota_generation!=self.generation:return
-        self.bubble.quota(windows);self.position_bubble();self.bubble_timer.start(12000)
+        title=self.character.quota_title if any('remaining' in window for window in windows) else self.character.usage_title
+        self.bubble.quota(windows,title);self.position_bubble();self.bubble_timer.start(12000)
     def quota_failed(self,error):
         self.quota_inflight=False
         if self.quota_generation==self.generation:self.say('主人，我暂时没查到额度，过一会儿再看看好不好？\n'+error,8000)
@@ -905,9 +920,11 @@ class Pet(QWidget):
         if self.chat and not self.chat.shutdown():
             event.ignore();QTimer.singleShot(500,self.close);return
         self.desktop_sync.stop()
-        self.tick.stop();self.visibility_timer.stop();self.tray.hide();self.bubble.close()
+        self.tick.stop();self.visibility_timer.stop();self.bubble.close()
         if self.worker and self.worker.isRunning():self.worker.cancel.set();self.worker.wait(3000)
-        QApplication.quit();event.accept()
+        event.accept()
+        if self.hub:self.hub.pet_closed(self)
+        else:self.tray.hide();QApplication.quit()
 
 def main():
     if '--autostart' in sys.argv:
@@ -918,6 +935,7 @@ def main():
         return run(ROOT)
     app=QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    configure_mac_app()
     if '--enable-autostart' in sys.argv or '--disable-autostart' in sys.argv:
         from autostart import enable_autostart,disable_autostart
         try:
@@ -930,41 +948,19 @@ def main():
     if socket.waitForConnected(150):return 0
     QLocalServer.removeServer('bailong-desktop-pet-v1');server=QLocalServer();server.listen('bailong-desktop-pet-v1')
     try:
-        pet=Pet();pet.show();configure_mac_window(pet);configure_mac_window(pet.bubble)
-        def reveal_existing_pet():
-            while server.hasPendingConnections():
-                connection=server.nextPendingConnection()
-                connection.disconnectFromServer();connection.deleteLater()
-            screen=QApplication.primaryScreen()
-            if screen:
-                area=screen.availableGeometry()
-                pet.move(clamp_position(QPoint(area.center().x()-pet.width()//2,area.center().y()-pet.height()//2),pet.size(),area))
-            pet.set_manual_hidden(False)
-            if pet.desktop_hidden():return
-            pet.showNormal();pet.show();pet.raise_()
-            if sys.platform=='win32':
-                import ctypes
-                ctypes.windll.user32.ShowWindow(int(pet.winId()),4)
-        server.newConnection.connect(reveal_existing_pet)
+        from pet_hub import PetHub
+        hub=PetHub(Pet,server)
         def record_startup():
-            # pythonw can inherit a hidden startup state from a launcher.
-            # Explicitly show this app's own window without stealing focus.
-            native_visible=pet.isVisible()
-            if sys.platform=='win32':
-                import ctypes
-                handle=int(pet.winId())
-                ctypes.windll.user32.ShowWindow(handle,4)
-                native_visible=bool(ctypes.windll.user32.IsWindowVisible(handle))
             (STATE_ROOT/'app').mkdir(parents=True,exist_ok=True)
-            (STATE_ROOT/'app/运行状态.json').write_text(json.dumps({'version':VERSION,'pid':os.getpid(),'visible':pet.isVisible(),'nativeVisible':native_visible,'windowId':int(pet.winId()),'variants':len(pet.variants),'position':[pet.x(),pet.y()],'displaySize':[pet.width(),pet.height()],'frameSize':[self_size for self_size in (pet.frames[0].width(),pet.frames[0].height())]},ensure_ascii=False),encoding='utf-8')
+            (STATE_ROOT/'app/运行状态.json').write_text(json.dumps({'version':VERSION,'pid':os.getpid(),'pets':[{'id':pet.character.id,'visible':pet.isVisible(),'windowId':int(pet.winId()),'variants':len(pet.variants),'position':[pet.x(),pet.y()],'displaySize':[pet.width(),pet.height()],'frameSize':pet.frame_size} for pet in hub.pets]},ensure_ascii=False),encoding='utf-8')
         QTimer.singleShot(1000,record_startup)
         def record_visibility():
-            (STATE_ROOT/'app/显示诊断.json').write_text(json.dumps({'pid':os.getpid(),'visible':pet.isVisible(),'manualHidden':pet.manual_hidden,'fullscreenHidden':pet.fullscreen_hidden,'trayVisible':pet.tray.isVisible(),'trayAvailable':QSystemTrayIcon.isSystemTrayAvailable(),'syncWatching':pet.desktop_sync.timer.isActive(),'syncActive':len(pet.desktop_sync.running),'syncObserved':len(pet.desktop_sync.known),'platform':QApplication.platformName(),'position':[pet.x(),pet.y()],'windowId':int(pet.winId())},ensure_ascii=False),encoding='utf-8')
-        diagnostic_timer=QTimer(pet);diagnostic_timer.setInterval(2000);diagnostic_timer.timeout.connect(record_visibility);diagnostic_timer.start()
+            (STATE_ROOT/'app/显示诊断.json').write_text(json.dumps({'pid':os.getpid(),'trayVisible':hub.tray.isVisible(),'trayAvailable':QSystemTrayIcon.isSystemTrayAvailable(),'platform':QApplication.platformName(),'pets':[{'id':pet.character.id,'visible':pet.isVisible(),'manualHidden':pet.manual_hidden,'fullscreenHidden':pet.fullscreen_hidden,'syncWatching':pet.desktop_sync.timer.isActive(),'syncActive':len(pet.desktop_sync.running),'syncObserved':len(pet.desktop_sync.known),'position':[pet.x(),pet.y()]} for pet in hub.pets]},ensure_ascii=False),encoding='utf-8')
+        diagnostic_timer=QTimer(hub);diagnostic_timer.setInterval(2000);diagnostic_timer.timeout.connect(record_visibility);diagnostic_timer.start()
         if '--preview' in sys.argv:
-            QTimer.singleShot(500,lambda:pet.grab().save(str(STATE_ROOT/'app/桌宠窗口预览.png')))
+            QTimer.singleShot(500,lambda:hub.pets[0].grab().save(str(STATE_ROOT/'app/桌宠窗口预览.png')))
             QTimer.singleShot(900,app.quit)
-    except Exception as error:QMessageBox.critical(None,'白龙桌宠启动失败',str(error));return 1
+    except Exception as error:QMessageBox.critical(None,'桌宠启动失败',str(error));return 1
     return app.exec()
 
 if __name__=='__main__':sys.exit(main())

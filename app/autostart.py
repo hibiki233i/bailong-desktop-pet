@@ -11,7 +11,7 @@ def gpt_is_open():
         try:
             name=(process.info['name'] or '').lower()
             path=(process.info['exe'] or '').lower().replace('/', '\\')
-            if sys.platform=='darwin' and name in ('codex','chatgpt') and any(s in path for s in ('codex.app\\contents\\macos\\','chatgpt.app\\contents\\macos\\')):return True
+            if sys.platform=='darwin' and name in ('codex','chatgpt','claude') and any(s in path for s in ('codex.app\\contents\\macos\\','chatgpt.app\\contents\\macos\\','claude.app\\contents\\macos\\')):return True
             if name=='chatgpt.exe' and any(package in path for package in ('\\openai.codex_', '\\openai.chatgpt_')):
                 return True
         except (psutil.NoSuchProcess,psutil.AccessDenied):continue

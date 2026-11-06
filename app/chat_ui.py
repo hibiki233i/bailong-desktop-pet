@@ -5,6 +5,7 @@ from pathlib import Path
 import queue
 import threading
 
+from platform_support import UI_FONT,configure_mac_window
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QTextBrowser, QListWidget, QSplitter, QFileDialog, QMessageBox,
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
 from chat_backend import HistoryStore, CodexSession, TaskCancelled
 
 FLAGS = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
-STYLE = '''QWidget {font-family:"Microsoft YaHei","Segoe UI";font-size:12px;color:#38294d;background:#fcfaff;}
+STYLE = '''QWidget {font-family:'''+UI_FONT+''';font-size:12px;color:#38294d;background:#fcfaff;}
 QPushButton {background:#eee6f7;border:1px solid #d6c5e7;border-radius:8px;padding:6px 10px;}
 QPushButton:hover {background:#e3d3f1;} QPushButton:disabled {color:#92869d;}
 QPlainTextEdit,QTextBrowser,QListWidget {background:white;border:1px solid #d9cbe5;border-radius:8px;padding:6px;}
@@ -30,6 +31,8 @@ class Composer(QWidget):
 
     def __init__(self):
         super().__init__(None, FLAGS)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+        configure_mac_window(self)
         self.setWindowTitle('白龙娘 · 对话模式')
         self.setStyleSheet(STYLE)
         self.setFixedSize(280, 152)

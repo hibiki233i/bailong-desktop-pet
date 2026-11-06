@@ -13,7 +13,7 @@ Windows轻量版：自移动、吸边探头、大小调节、Codex公开任务�
 3. 从完整Windows发布包复制整个 `outputs` 和 `tools` 文件夹到源码根目录，与 `app` 并列。保留全部35段WebM及素材清单。
 4. 执行 `python app/pet.py`；自检执行 `python app/pet.py --self-test`。
 
-程序通过FFmpeg的libvpx-vp9解码透明通道，保留动作预加载；请不要用丢弃透明通道的默认VP9解码方式替换。
+WebM素材通过FFmpeg的libvpx-vp9解码透明通道，请不要用丢弃透明通道的默认VP9解码方式替换。动作按需解码，只常驻默认待机。
 
 ## 构建Windows包
 
@@ -25,6 +25,6 @@ Windows轻量版：自移动、吸边探头、大小调节、Codex公开任务�
 
 没有Codex也能使用普通桌宠功能。额度、对话与任务同步需要使用者自己的Codex安装和登录。仓库不包含账号、密钥、个人聊天记录。
 
-macOS适配源码尚未完成Mac实机验收，不提供已验证Mac安装包。当前Mac构建脚本仍需补齐FFmpeg打包，请勿将其当作可直接发布的构建流程。
+macOS已在Apple Silicon实机验证，可同时显示Claude和Codex两只桌宠，运行和打包方法见[MAC适配说明](MAC适配说明.md)。Mac包只做临时签名，未公证，只适合本机测试。
 
 源码尚未指定开源许可证；公开源码不代表授予任意使用或再分发许可。美术素材说明见ASSETS.md，运行库遵循各自许可证。本项目非OpenAI官方产品。

@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from asset_checks import needs_full_set
 from unittest.mock import patch
 
 from chat_backend import HistoryStore, CodexSession, TaskCancelled
@@ -87,6 +88,7 @@ class ChatUiTests(unittest.TestCase):
     def tearDown(self):
         self.controller.hide();self.controller.window.hide();self.pet.bubble.hide()
 
+    @needs_full_set
     def test_menu_submenus_and_idle_preview(self):
         menu=self.pet.context_menu();actions={a.text():a for a in menu.actions()}
         self.assertEqual(len(actions['互动差分动画'].menu().actions()),15)
