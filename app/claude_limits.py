@@ -1,4 +1,5 @@
-"""Real Claude limits. Claude Code hands them only to a statusLine command, so a small script saves them for the pet."""
+"""Real Claude limits, from Magpie when it holds the login, or else from a statusLine command."""
+import http.client
 import json
 import os
 import shlex
@@ -6,6 +7,8 @@ import stat
 import sys
 import tempfile
 import time
+import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from claude_status import claude_home
@@ -15,6 +18,8 @@ SUPPORTED = sys.platform == 'darwin'
 SCRIPT_NAME = 'claude_statusline.sh'
 LIMITS_NAME = 'claude_limits.json'
 WINDOWS = (('five_hour', '5小时'), ('seven_day', '一周'))
+MAGPIE_QUOTAS = 'http://127.0.0.1:3425/v1/magpie/quotas'
+MAGPIE_WINDOWS = {'5 hours': '5小时', '7 days': '一周'}
 
 # A session reports no rate_limits before its first reply, so that input must not replace saved data.
 # jq keeps only the limits. Without jq the whole input is saved, and the pet still reads only the limits.
@@ -47,6 +52,60 @@ def age(seconds):
     return f'{hours} 小时前' if hours < 48 else f'{hours // 24} 天前'
 
 
+def window_row(name, used, resets, now):
+    if used is None or (resets and resets <= now):
+        return {'name': name, 'text': '已重置，等待下次更新'}
+    return {'name': name, 'remaining': max(0, min(100, 100 - float(used))), 'resetsAt': resets}
+
+
+def finish_rows(rows, saved, now):
+    """None when nothing is current, so the caller moves on to the next source."""
+    if not any('remaining' in row for row in rows):
+        return None
+    if saved:
+        rows.append({'name': '更新', 'text': age(now - saved)})
+    return rows
+
+
+def read_magpie(url=MAGPIE_QUOTAS, timeout=2):
+    """Magpie's quota report, or None while it is not running. A system proxy must not catch this local call."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=timeout) as response:
+            return json.load(response)
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+
+
+def stamp(text):
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def magpie_windows(provider='claude', report=None, now=None):
+    """Rows from Magpie, which holds the login when Claude Code runs through it. The account email stays unread."""
+    report = read_magpie() if report is None else report
+    entries = report.get('data') if isinstance(report, dict) else None
+    if not isinstance(entries, list):
+        return None
+    entries = [entry for entry in entries if isinstance(entry, dict) and entry.get('provider') == provider]
+    if not entries:
+        return None
+    entry = next((item for item in entries if item.get('last')), entries[0])
+    windows = entry.get('windows')
+    if not isinstance(windows, list):
+        return None
+    now = now or time.time()
+    rows = []
+    for window in windows:
+        used = window.get('used') if isinstance(window, dict) else None
+        if isinstance(used, (int, float)):
+            rows.append(window_row(MAGPIE_WINDOWS.get(window.get('name'), str(window.get('name'))), used, stamp(window.get('resetsAt')), now))
+    return finish_rows(rows, stamp(entry.get('readAt')), now)
+
+
 def limit_windows(path=None, now=None):
     """Rows for the quota bubble, or None when there is no usable report yet."""
     path = Path(path or user_data() / LIMITS_NAME)
@@ -62,15 +121,8 @@ def limit_windows(path=None, now=None):
     for key, name in WINDOWS:
         window = limits.get(key)
         window = window if isinstance(window, dict) else {}
-        used, resets = window.get('used_percentage'), window.get('resets_at')
-        if used is None or (resets and resets <= now):
-            rows.append({'name': name, 'text': '已重置，等 Claude Code 下次回复后更新'})
-        else:
-            rows.append({'name': name, 'remaining': max(0, min(100, 100 - float(used))), 'resetsAt': resets})
-    if not any('remaining' in row for row in rows):
-        return None
-    rows.append({'name': '更新', 'text': age(now - saved)})
-    return rows
+        rows.append(window_row(name, window.get('used_percentage'), window.get('resets_at'), now))
+    return finish_rows(rows, saved, now)
 
 
 def command():

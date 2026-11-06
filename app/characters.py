@@ -9,9 +9,9 @@ def codex_quota(cancel):
 
 
 def claude_usage(cancel):
-    from claude_limits import limit_windows
+    from claude_limits import limit_windows, magpie_windows
     from claude_status import usage_windows
-    return limit_windows() or usage_windows(cancel=cancel)
+    return magpie_windows() or limit_windows() or usage_windows(cancel=cancel)
 
 
 def codex_sync(pet):

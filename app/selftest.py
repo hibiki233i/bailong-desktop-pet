@@ -106,6 +106,7 @@ def run(root):
             for item in clips:assert other.load(item).wait()
             report['checks'].append(f'{other.character.agent}桌宠{len(clips)}段动画可解码，状态读取为{other.desktop_sync.status()["state"]}')
         report['checks'].append(f'控制面板显示{len(panel.cards)}只桌宠')
+        report['checks'].append('Claude额度：'+(CHARACTERS[0].usage_title if not any('remaining' in row for row in CHARACTERS[0].read_quota(None)) else CHARACTERS[0].quota_title))
         panel.close()
         hub.quit()
         report['passed']=True

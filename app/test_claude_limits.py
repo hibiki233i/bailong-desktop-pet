@@ -1,4 +1,4 @@
-import json,os,shutil,stat,subprocess,tempfile,time,unittest
+import http.server,json,os,shutil,socket,stat,subprocess,tempfile,threading,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 import claude_limits as limits
@@ -39,6 +39,66 @@ class Windows(unittest.TestCase):
             self.path.write_text(text,encoding='utf-8');self.assertIsNone(limits.limit_windows(self.path))
     def test_age_text(self):
         self.assertEqual([limits.age(s) for s in (5,120,7200,259200)],['刚刚','2 分钟前','2 小时前','3 天前'])
+
+MAGPIE={'object':'list','data':[
+    {'provider':'claude','name':'Claude Code','kind':'subscription','user':'someone@example.com','readAt':'2030-03-17T17:43:20+08:00','last':True,
+     'windows':[{'name':'5 hours','used':55,'remaining':45,'resetsAt':'2030-03-18T01:20:00+08:00','holds':{'tokens':344}},
+                {'name':'7 days','used':8,'remaining':92,'resetsAt':'2030-03-23T20:00:00+08:00'}]},
+    {'provider':'codex','name':'Codex','user':'someone@example.com','readAt':'2030-03-17T17:43:20+08:00','windows':[{'name':'5 hours','used':14,'resetsAt':'2030-03-18T02:09:30+08:00'}]}]}
+READ_AT=1899971000.0
+
+class Magpie(unittest.TestCase):
+    def rows(self,report=MAGPIE,provider='claude',now=READ_AT+120):
+        return limits.magpie_windows(provider,report,now)
+    def test_report_becomes_remaining_share_and_reset_time(self):
+        rows=self.rows()
+        self.assertEqual([row['name'] for row in rows],['5小时','一周','更新'])
+        self.assertEqual(rows[0]['remaining'],45);self.assertEqual(rows[1]['remaining'],92)
+        self.assertEqual(rows[0]['resetsAt'],1899998400.0);self.assertEqual(rows[2]['text'],'2 分钟前')
+    def test_each_agent_reads_its_own_entry(self):
+        self.assertEqual(self.rows(provider='codex')[0]['remaining'],86)
+        self.assertIsNone(self.rows(provider='gemini'))
+    def test_account_email_stays_out_of_the_rows(self):
+        self.assertNotIn('example.com',json.dumps(self.rows(),ensure_ascii=False))
+    def test_latest_account_wins_when_there_are_several(self):
+        older={'provider':'claude','readAt':MAGPIE['data'][0]['readAt'],'windows':[{'name':'5 hours','used':99,'resetsAt':'2030-03-18T01:20:00+08:00'}]}
+        report={'data':[older,MAGPIE['data'][0]]}
+        self.assertEqual(self.rows(report)[0]['remaining'],45)
+    def test_past_window_is_not_shown_as_current(self):
+        rows=self.rows(now=1899998500.0)
+        self.assertIn('已重置',rows[0]['text']);self.assertEqual(rows[1]['remaining'],92)
+    def test_unknown_window_keeps_its_name(self):
+        report={'data':[{'provider':'claude','windows':[{'name':'Weekly Opus','used':5,'resetsAt':None}]}]}
+        self.assertEqual(self.rows(report),[{'name':'Weekly Opus','remaining':95,'resetsAt':None}])
+    def test_changed_format_falls_back_instead_of_failing(self):
+        for report in ([],{},{'data':3},{'data':[3]},{'data':[{'provider':'claude'}]},{'data':[{'provider':'claude','windows':3}]},
+                       {'data':[{'provider':'claude','windows':[3,{'name':'5 hours'},{'name':'5 hours','used':'55'}]}]}):
+            self.assertIsNone(self.rows(report),report)
+    def test_bad_time_text_only_loses_that_detail(self):
+        report={'data':[{'provider':'claude','readAt':'soon','windows':[{'name':'5 hours','used':10,'resetsAt':'later'}]}]}
+        self.assertEqual(self.rows(report),[{'name':'5小时','remaining':90,'resetsAt':None}])
+
+class MagpieServer(unittest.TestCase):
+    def serve(self,status,body):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(status);self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        return f'http://127.0.0.1:{server.server_port}/v1/magpie/quotas'
+    def test_reads_the_local_report(self):
+        self.assertEqual(limits.read_magpie(self.serve(200,json.dumps(MAGPIE).encode())),MAGPIE)
+    def test_error_page_or_other_service_is_none(self):
+        self.assertIsNone(limits.read_magpie(self.serve(404,b'{}')))
+        self.assertIsNone(limits.read_magpie(self.serve(200,b'<html>')))
+    def test_stopped_magpie_is_none(self):
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1',0));closed=probe.getsockname()[1]
+        self.assertIsNone(limits.read_magpie(f'http://127.0.0.1:{closed}/',timeout=1))
+    def test_stopped_magpie_gives_no_rows(self):
+        with patch('claude_limits.read_magpie',lambda:None):self.assertIsNone(limits.magpie_windows())
 
 class Install(unittest.TestCase):
     def setUp(self):

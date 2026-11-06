@@ -69,7 +69,7 @@ class PetCard(QFrame):
             switches.addWidget(box, index // 2, index % 2)
         self.limits = None
         if pet.character.real_limits and claude_limits.SUPPORTED:
-            self.limits = QCheckBox('读取真实额度')
+            self.limits = QCheckBox('通过状态栏读取额度')
             self.limits.setToolTip('在 Claude Code 设置里加一个状态栏，用它接收账户额度。')
             self.limits.toggled.connect(self.set_limits)
             switches.addWidget(self.limits, 2, 0)

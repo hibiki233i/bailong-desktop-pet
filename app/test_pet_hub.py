@@ -61,10 +61,13 @@ class Hub(unittest.TestCase):
             pet.quota_ready([{'name':'5小时','remaining':76.5,'resetsAt':None}]);self.assertEqual(title(),'Claude 剩余额度')
         pet.bubble.hide()
     def test_real_limits_come_first_and_local_usage_is_the_fallback(self):
-        real=[{'name':'5小时','remaining':50,'resetsAt':None}]
-        with patch('claude_limits.limit_windows',lambda:real),patch('claude_status.usage_windows',side_effect=AssertionError):
-            self.assertEqual(CLAUDE.read_quota(None),real)
-        with patch('claude_limits.limit_windows',lambda:None),patch('claude_status.usage_windows',lambda cancel:['local']):
+        magpie=[{'name':'5小时','remaining':50,'resetsAt':None}];saved=[{'name':'5小时','remaining':40,'resetsAt':None}]
+        unused=patch('claude_status.usage_windows',side_effect=AssertionError)
+        with patch('claude_limits.magpie_windows',lambda:magpie),patch('claude_limits.limit_windows',side_effect=AssertionError),unused:
+            self.assertEqual(CLAUDE.read_quota(None),magpie)
+        with patch('claude_limits.magpie_windows',lambda:None),patch('claude_limits.limit_windows',lambda:saved),unused:
+            self.assertEqual(CLAUDE.read_quota(None),saved)
+        with patch('claude_limits.magpie_windows',lambda:None),patch('claude_limits.limit_windows',lambda:None),patch('claude_status.usage_windows',lambda cancel:['local']):
             self.assertEqual(CLAUDE.read_quota(None),['local'])
     @unittest.skipUnless(sys.platform=='darwin','只有 macOS 提供这个开关')
     def test_panel_switch_changes_claude_settings_through_one_path(self):

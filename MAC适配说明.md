@@ -54,7 +54,17 @@ Claude 桌宠没有对话模式。
 
 ## Claude 额度
 
-Claude Code 只把账户额度交给 statusLine 命令。在控制面板勾选 Claude 卡片上的“读取真实额度”后，会有两处改动：
+“查额度”按下面的顺序找数据，找到就停：
+
+1. **Magpie：** Claude Code 通过 Magpie 登录时，读取它的本机接口 `http://127.0.0.1:3425/v1/magpie/quotas`。不需要令牌，也不需要设置。桌宠只取额度数字，不保存账户邮箱。
+2. **statusLine：** 在控制面板勾选“通过状态栏读取额度”。
+3. **本机用量：** 上面都没有时，显示本机记录里的 token 数，不是账户剩余额度。
+
+Magpie 没有运行时，会用下一个来源。这个接口没有稳定性说明，以后格式变了也一样。Magpie 的额度是定时读取的，所以气泡会显示数据更新时间。
+
+### 通过状态栏读取
+
+没有 Magpie 时才需要这个开关。Claude Code 只把账户额度交给 statusLine 命令。勾选后会有两处改动：
 
 - 在 `~/Library/Application Support/BailongPet/` 放一个小脚本，它把 `rate_limits` 存成 `claude_limits.json`。
 - 在 `~/.claude/settings.json` 加一项 `statusLine`，其他设置不变。
@@ -63,12 +73,10 @@ Claude Code 只把账户额度交给 statusLine 命令。在控制面板勾选 C
 
 使用前要知道：
 
-- 只有用 claude.ai 订阅登录的会话才有 `rate_limits`。通过 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 或 API Key 使用时，Claude Code 不提供这项数据。
+- 只有 Claude Code 直接用 claude.ai 订阅登录时才有 `rate_limits`。通过 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 或 API Key 使用时，Claude Code 不提供这项数据。
 - 终端里的 Claude Code 会运行 statusLine。修改设置时已经打开的桌面应用会话没有运行它，新开的桌面会话还没验证。
 - 配置后，Claude Code 底部的部分按键提示（比如 `esc to interrupt`）不再显示，这一行改成模型名和剩余额度。
-- 额度在 Claude Code 收到回复时更新，所以气泡会显示数据更新时间。多个会话同时运行时，以最后写入的为准。
-
-没有额度数据时，“查额度”显示本机记录里的 token 数，不是账户剩余额度。
+- 额度在 Claude Code 收到回复时更新。多个会话同时运行时，以最后写入的为准。
 
 ## 控制面板
 
@@ -113,8 +121,9 @@ Claude Code 只把账户额度交给 statusLine 命令。在控制面板勾选 C
 - LaunchAgent 启动桌宠，关闭后不留文件
 - 两只桌宠同时显示，切换到 Finder 后仍在屏幕上，退出后不留进程
 - 读取真实的 Claude Code 会话：Claude 桌宠进入工作状态，控制面板显示任务名
+- 从 Magpie 读取真实额度，和 Claude Desktop 显示的数字一致
 - 桌宠运行时再次打开 `.app`，只有一个进程，控制面板弹出
-- 使用两套完整素材时，全部 137 项测试通过
+- 使用两套完整素材时，全部 150 项测试通过
 
 使用较少的素材时，依赖完整素材的测试会被跳过。
 
