@@ -43,6 +43,12 @@ def read_quota(timeout=20,cancel=None,attempts=2,log_path=None):
                 if cancel.wait(.8):raise QuotaFailure('额度查询已取消','cancelled')
             else:time.sleep(.8)
 
+def codex_env():
+    """Finder gives apps a minimal PATH, and npm's codex launcher still has to find node."""
+    if sys.platform!='darwin':return None
+    folders=[os.environ.get('PATH',''),'/opt/homebrew/bin','/usr/local/bin',str(Path.home()/'.local/bin')]
+    return {**os.environ,'PATH':os.pathsep.join(f for f in folders if f)}
+
 def find_codex():
     """Find Codex even when a startup process has a minimal PATH."""
     override = os.environ.get('BAILONG_CODEX', '').strip().strip('"')
@@ -57,9 +63,12 @@ def find_codex():
             return located
     profile = Path(os.environ.get('USERPROFILE') or Path.home())
     if sys.platform=='darwin':
-        for path in (Path('/Applications/Codex.app/Contents/Resources/codex'),profile/'Applications/Codex.app/Contents/Resources/codex',Path('/opt/homebrew/bin/codex'),Path('/usr/local/bin/codex'),profile/'.local/bin/codex'):
+        # The desktop app was renamed from Codex to ChatGPT and now nests its CLI in a helper app.
+        bundled=[folder/app/'Contents/Resources'/inner for folder in (Path('/Applications'),profile/'Applications')
+                 for app in ('ChatGPT.app','Codex.app') for inner in ('codex-cli/CodexCLI.app/Contents/MacOS/codex','codex')]
+        for path in (*bundled,Path('/opt/homebrew/bin/codex'),Path('/usr/local/bin/codex'),profile/'.local/bin/codex'):
             if path.is_file() and os.access(path,os.X_OK):return str(path)
-        raise RuntimeError('没有找到 Codex。请安装 Codex，或设置 BAILONG_CODEX 指向 codex 可执行文件。')
+        raise RuntimeError('没有找到 Codex。请安装 ChatGPT 桌面版，或设置 BAILONG_CODEX 指向 codex 可执行文件。')
     local = Path(os.environ.get('LOCALAPPDATA') or profile / 'AppData' / 'Local')
     roots = [local / 'OpenAI' / 'Codex' / 'bin']
     candidates = []
@@ -80,7 +89,7 @@ def _read_quota_once(timeout=20, cancel=None):
     if frozen_windows:ctypes.windll.kernel32.SetDllDirectoryW(None)
     try:
         process = subprocess.Popen([executable, 'app-server'], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8',
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', env=codex_env(),
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     finally:
         if frozen_windows:ctypes.windll.kernel32.SetDllDirectoryW(sys._MEIPASS)

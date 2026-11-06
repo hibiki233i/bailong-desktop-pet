@@ -4,6 +4,7 @@ import math
 import random
 import time
 import unittest
+from asset_checks import needs_full_set
 from unittest.mock import patch
 from PySide6.QtCore import QPoint
 from PySide6.QtCore import QEvent, Qt, QPointF
@@ -153,10 +154,11 @@ class MovementTests(unittest.TestCase):
                 self.assertEqual(p.dock_edge,'left');self.assertEqual(p.mode,'idle')
         finally:p.worker=old_worker;p.quota_inflight=False
 
+    @needs_full_set
     def test_preload_and_menu(self):
         p=self.pet;item=p.movement_slots[0]
         self.assertEqual(item['id'],'move02')
-        self.assertEqual(len(p.pinned_frames[str(p.asset_path(item))]),264)
+        self.assertEqual(len(p.load(item).wait()),264)
         menu=p.context_menu();sub=next(a.menu() for a in menu.actions() if a.text()=='移动差分')
         self.assertEqual(sub.actions()[0].text(),'02 · 跑步（向右）');menu.deleteLater()
 
@@ -193,6 +195,7 @@ class MovementTests(unittest.TestCase):
                 p.set_size_percent(previous)
         finally:p.size_dialog.hide();menu.deleteLater()
 
+    @needs_full_set
     def test_left_flight_waits_for_second_flap(self):
         p=self.pet;left=next(v for v in p.movement_slots if v['id']=='move03left');origin=QPoint(p.pos())
         with patch('pet.plan_movement',return_value=((320,150),True)):
@@ -200,13 +203,14 @@ class MovementTests(unittest.TestCase):
         p.advance_movement(3.124);self.assertEqual(p.pos(),origin)
         p.advance_movement(4);self.assertNotEqual(p.pos(),origin)
 
+    @needs_full_set
     def test_flight_assets_and_direction_parameters(self):
         p=self.pet;self.assertEqual(len(p.movement_slots),6)
         flights=[v for v in p.movement_slots if v['number']=='03']
         self.assertEqual(len(flights),2)
         for item in flights:
             self.assertEqual(item['durationMs'],9100)
-            self.assertEqual(len(p.pinned_frames[str(p.asset_path(item))]),273)
+            self.assertEqual(len(p.load(item).wait()),273)
             with patch('pet.plan_movement',return_value=((320,200),False)) as planner:
                 self.assertTrue(p.start_movement(item,manual=True))
                 self.assertEqual(planner.call_args.kwargs['angle_range'],[45,80])
@@ -288,6 +292,7 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(p.movement_mirrored);self.assertIsNone(p.movement_plan)
         self.assertGreater(p.movement_ready_at,time.monotonic()+9)
 
+    @needs_full_set
     def test_hidden_pause_has_no_jump(self):
         p=self.pet
         with patch('pet.plan_movement',return_value=((320,200),False)):
@@ -301,6 +306,7 @@ class MovementTests(unittest.TestCase):
             self.assertEqual(p.pos(),before)
             self.assertAlmostEqual(p.started,start+20)
 
+    @needs_full_set
     def test_left_clip_and_edge_fallback(self):
         p=self.pet;left=next(v for v in p.movement_slots if v['sourceFacing']=='left')
         origin=QPoint(p.pos());target=origin-QPoint(100,0)

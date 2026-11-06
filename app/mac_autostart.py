@@ -4,6 +4,7 @@ from pathlib import Path
 
 LABEL='com.bailongpet.autostart'
 def entry():return Path.home()/'Library/LaunchAgents'/f'{LABEL}.plist'
+def is_enabled():return entry().is_file()
 def command():
     return [sys.executable,'--autostart'] if getattr(sys,'frozen',False) else [sys.executable,str(Path(__file__).with_name('pet.py')),'--autostart']
 def disable():

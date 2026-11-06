@@ -3,6 +3,9 @@ import os
 import sys
 from pathlib import Path
 
+# Qt pays a lookup cost for every missing family, and the Windows fonts are absent on macOS.
+UI_FONT='"PingFang SC","Helvetica Neue"' if sys.platform=='darwin' else '"Microsoft YaHei","Segoe UI"'
+
 def resource_root():
     if not getattr(sys,'frozen',False):return Path(__file__).resolve().parents[1]
     executable=Path(sys.executable).resolve()
@@ -16,15 +19,53 @@ def user_data():
 def state_root():
     return user_data() if sys.platform=='darwin' else resource_root()
 
+def configure_mac_app():
+    """Keep a source run out of the Dock, as LSUIElement does for the packaged app."""
+    if sys.platform!='darwin':return
+    try:
+        from AppKit import NSApplication,NSApplicationActivationPolicyAccessory
+        NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    except (ImportError,AttributeError):pass
+
+def activate_mac_app():
+    """An accessory app is never frontmost by itself, so a new window would open behind others."""
+    if sys.platform!='darwin':return
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except (ImportError,AttributeError):pass
+def on_mac_reopen(callback):
+    """Opening a running .app sends it a reopen event; no second process starts. Keep the result alive."""
+    if sys.platform!='darwin':return None
+    try:
+        import objc
+        from Foundation import NSAppleEventManager,NSObject
+        from PySide6.QtGui import QGuiApplication
+    except ImportError:return None
+    if QGuiApplication.platformName()!='cocoa':return None
+    class ReopenHandler(NSObject):
+        @objc.typedSelector(b'v@:@@')
+        def handleReopen_reply_(self,event,reply):callback()
+    handler=ReopenHandler.alloc().init()
+    # Event class 'aevt' and id 'rapp' are kCoreEventClass and kAEReopenApplication.
+    NSAppleEventManager.sharedAppleEventManager().setEventHandler_andSelector_forEventClass_andEventID_(handler,b'handleReopen:reply:',0x61657674,0x72617070)
+    return handler
 def configure_mac_window(widget):
     if sys.platform!='darwin':return
     try:
         import objc
-        from AppKit import NSWindowCollectionBehaviorCanJoinAllSpaces,NSWindowCollectionBehaviorFullScreenAuxiliary
+        from AppKit import NSWindowCollectionBehaviorCanJoinAllSpaces,NSWindowCollectionBehaviorFullScreenAuxiliary,NSWindowCollectionBehaviorMoveToActiveSpace
+        from PySide6.QtGui import QGuiApplication
+    except ImportError:return
+    # Only Cocoa's winId is an NSView pointer; dereferencing an offscreen id would crash.
+    if QGuiApplication.platformName()!='cocoa':return
+    try:
         view=objc.objc_object(c_void_p=int(widget.winId()))
         window=view.window()
-        window.setCollectionBehavior_(window.collectionBehavior()|NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary)
-    except (ImportError,AttributeError,ValueError):pass
+        # Qt marks Tool windows MoveToActiveSpace, and AppKit raises if that meets CanJoinAllSpaces.
+        behavior=window.collectionBehavior()&~NSWindowCollectionBehaviorMoveToActiveSpace
+        window.setCollectionBehavior_(behavior|NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary)
+    except (AttributeError,ValueError,objc.error):pass
 
 def mac_fullscreen():
     try:

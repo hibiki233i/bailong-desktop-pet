@@ -7,7 +7,8 @@ def ffmpeg_path():
     root=resource_root()
     for candidate in (root/'tools/ffmpeg.exe',root/'tools/ffmpeg',root/'work/video-deps/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe'):
         if candidate.is_file():return str(candidate)
-    found=shutil.which('ffmpeg')
+    # A Finder launch has no Homebrew folders on PATH.
+    found=shutil.which('ffmpeg') or next((p for p in ('/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg') if os.path.isfile(p)),None)
     if found:return found
     raise RuntimeError('缺少透明动画播放器，请重新完整解压桌宠安装包。')
 

@@ -1,6 +1,8 @@
+import sys
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import unittest, time
+from asset_checks import needs_full_set
 from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QPoint, QTimer
@@ -15,9 +17,10 @@ class Tests(unittest.TestCase):
         self.pet.tick.stop();self.pet.bubble.close();self.pet.hide()
         self.pet.frames=[];self.pet.cache.clear();self.pet.pinned_frames.clear();self.pet.transition=None
         self.pet.deleteLater();app.processEvents()
+    @needs_full_set
     def test_all_assets_and_idle_weights(self):
         self.assertEqual(len(self.pet.variants),15)
-        for item in self.pet.idles+self.pet.variants:self.assertEqual(len(self.pet.load(item)),({'17':121,'21':97,'24':145,'26':97}.get(item['id'],96)))
+        for item in self.pet.idles+self.pet.variants:self.assertEqual(len(self.pet.load(item).wait()),({'17':121,'21':97,'24':145,'26':97}.get(item['id'],96)))
         with patch('pet.random.choices',return_value=[self.pet.idles[1]]) as choice:
             self.pet.idle();self.assertEqual(choice.call_args.kwargs['weights'],[4,1])
     def test_click_disambiguation(self):
@@ -29,7 +32,8 @@ class Tests(unittest.TestCase):
         self.pet.last_click=None
         QTest.mouseClick(self.pet,Qt.MouseButton.LeftButton,pos=QPoint(160,160));QTest.qWait(300)
         self.assertEqual(self.pet.mode,'variant');self.assertTrue(self.pet.bubble.isVisible())
-        self.assertLessEqual(self.pet.bubble_timer.remainingTime(),4000)
+        # Qt coarse timers may run 5% long, and macOS reports that in remainingTime().
+        self.assertLessEqual(self.pet.bubble_timer.remainingTime(),4200)
     def test_variant_return_and_quota_stale(self):
         self.pet.choose(self.pet.variants[0]);self.pet.started=time.monotonic()-4.01;self.pet.animate()
         self.assertEqual(self.pet.mode,'idle')
@@ -59,7 +63,9 @@ class Tests(unittest.TestCase):
             actions.extend(a.text() for a in menu.actions() if not a.isSeparator());menu.close()
         QTimer.singleShot(100,inspect)
         QTest.mouseClick(self.pet,Qt.MouseButton.RightButton,pos=QPoint(160,160))
-        self.assertEqual(actions,['隐藏桌宠','全屏时自动隐藏','打开对话模式','查看历史对话','对话框大小…','互动差分动画','工作差分动画','待机差分动画','移动差分','禁用自移动','桌宠大小…','禁用音效','退出桌宠'])
+        expected=['隐藏桌宠','全屏时自动隐藏','打开对话模式','查看历史对话','对话框大小…','互动差分动画','工作差分动画','待机差分动画','移动差分','禁用自移动','桌宠大小…','禁用音效','退出桌宠']
+        if sys.platform=='darwin':expected.insert(-1,'随ChatGPT或Claude自动启动')
+        self.assertEqual(actions,expected)
         self.assertEqual(actions[-1],'退出桌宠')
     def test_drag_landing_and_click_suppression(self):
         from types import SimpleNamespace
@@ -70,23 +76,32 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.pet.mode,'drag');self.assertEqual(self.pet.current['id'],'drag')
         self.pet.started=time.monotonic()-4.1;self.pet.animate();self.assertEqual(self.pet.mode,'drag')
         self.pet.mouseReleaseEvent(press)
-        self.assertEqual(self.pet.mode,'landing');self.assertEqual(len(self.pet.frames),48)
+        self.assertEqual(self.pet.mode,'landing');self.assertEqual(len(self.pet.frames.wait()),48)
         self.assertEqual(self.pet.current['durationMs'],2000);self.assertFalse(self.pet.click_timer.isActive())
         self.pet.started=time.monotonic()-2.1;self.pet.animate();self.assertEqual(self.pet.mode,'idle')
-    def test_interaction_frames_survive_variant_eviction(self):
-        for item in self.pet.variants[:3]:self.pet.load(item)
-        with patch('pet.gzip.decompress',side_effect=AssertionError('drag must not decode on mouse movement')):
-            drag=self.pet.manifest['dragAnimation'];landing=self.pet.manifest['landingAnimation']
-            self.assertIs(self.pet.load(drag),self.pet.pinned_frames[str(self.pet.asset_path(drag))])
-            self.assertEqual(len(self.pet.load(landing)),48)
-    def test_variant_cache_bounded_and_idle_return_is_warm(self):
+    def test_only_the_default_idle_stays_resident(self):
+        self.assertEqual(list(self.pet.pinned_frames),[str(self.pet.asset_path(self.pet.idles[0]))])
+        self.assertIs(self.pet.load(self.pet.idles[0]),self.pet.pinned_frames[str(self.pet.asset_path(self.pet.idles[0]))])
+    def test_only_the_clip_on_screen_stays_decoded(self):
         for item in self.pet.variants:
             self.pet.choose(item)
-            self.assertLessEqual(len(self.pet.cache),2)
-            self.pet.started=time.monotonic()-item['durationMs']/1000-.1
-            with patch('pet.gzip.decompress',side_effect=AssertionError('idle should stay warm')):
-                self.pet.animate()
-                self.assertEqual(self.pet.mode,'idle')
+            self.assertEqual(list(self.pet.cache),[str(self.pet.asset_path(item))])
+            self.assertIs(self.pet.frames,self.pet.cache[str(self.pet.asset_path(item))])
+        self.pet.play(self.pet.idles[0],'idle');self.assertEqual(self.pet.cache,{})
+    def test_loading_without_playing_stays_bounded(self):
+        clips=[self.pet.load(item) for item in self.pet.variants]
+        self.assertLessEqual(len(self.pet.cache),2)
+        for clip in clips:clip.done.wait(30)
+    def test_previous_frame_stays_until_a_new_clip_has_its_first(self):
+        from frame_store import ClipFrames
+        shown=self.pet.visible_frame();self.assertIsNotNone(shown)
+        self.pet.frames=ClipFrames(10);self.assertIs(self.pet.visible_frame(),shown)
+        self.pet.grab()
+    def test_undecodable_clip_falls_back_to_idle(self):
+        from frame_store import ClipFrames
+        clip=ClipFrames(10);clip.error='坏文件';clip.done.set();self.pet.frames=clip
+        self.pet.started=time.monotonic();self.pet.animate()
+        self.assertEqual(self.pet.mode,'idle');self.assertIs(self.pet.frames,self.pet.pinned_frames[str(self.pet.asset_path(self.pet.idles[0]))])
     def test_quota_zero_percent_is_readable_outside_bar(self):
         from PySide6.QtWidgets import QLabel,QProgressBar
         self.pet.bubble.quota([{'name':'5小时','remaining':0,'resetsAt':None}])

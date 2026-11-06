@@ -1,4 +1,4 @@
-import os
+import os,sys
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import unittest
 from unittest.mock import patch
@@ -46,7 +46,8 @@ class PreferencesTests(unittest.TestCase):
   p.set_task_bubbles_disabled(True);self.assertTrue(p.bubble.isVisible())
  def test_sound_mute_and_menu_options(self):
   p=self.pet;p.set_sound_disabled(True)
-  with patch('winsound.PlaySound') as sound:p.play_click_sound();sound.assert_not_called()
+  player='PySide6.QtMultimedia.QSoundEffect' if sys.platform=='darwin' else 'winsound.PlaySound'
+  with patch(player) as sound:p.play_click_sound();sound.assert_not_called()
   menu=p.context_menu();names=[a.text() for a in menu.actions() if not a.isSeparator()]
   self.assertIn('对话框大小…',names);self.assertIn('桌宠大小…',names)
   toggle=next(a for a in menu.actions() if a.text()=='禁用音效');self.assertTrue(toggle.isChecked())

@@ -4,6 +4,9 @@ from pathlib import Path
 
 def run(root):
     os.environ['QT_QPA_PLATFORM']='offscreen'
+    # A signed .app bundle must stay unchanged, so reports go to the user data folder there.
+    from platform_support import state_root
+    output=state_root();output.mkdir(parents=True,exist_ok=True)
     report={'passed':False,'checks':[],'frozen':False}
     try:
         import sys
@@ -11,21 +14,21 @@ def run(root):
         report.update(version=VERSION,frozen=bool(getattr(sys,'frozen',False)))
         if '--chat-only' in sys.argv:
             from chat_backend import CodexSession
-            folder=root/'对话自检任务';folder.mkdir(exist_ok=True)
+            folder=output/'对话自检任务';folder.mkdir(exist_ok=True)
             session=CodexSession(folder)
             try:result=session.run('这是桌宠对话连接验收。不要使用工具，不要读写文件，只回复：白龙娘对话连接成功。')
             finally:session.close()
             assert '连接成功' in result['text'],result['text']
             report['checks'].append('EXE通过Codex后台任务收到真实回复；不记录账号、任务ID或额度数值')
             report['passed']=True
-            (root/'对话接口检查报告.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+            (output/'对话接口检查报告.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
             return 0
         if '--quota-only' in sys.argv:
             from quota import read_quota,quota_windows
             windows=quota_windows(read_quota())
             report['checks'].append(f'EXE只读额度接口成功，返回{len(windows)}个窗口；不记录账号或额度数值')
             report['passed']=True
-            (root/'额度接口检查报告.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+            (output/'额度接口检查报告.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
             return 0
         from pet import Pet,clamp_position
         from quota import quota_windows
@@ -39,14 +42,18 @@ def run(root):
         pet.task_bubbles_disabled=False;pet.sound_disabled=True
         items=[pet.manifest['idle']]+pet.manifest.get('additionalIdleAnimations',[])+pet.variants+[pet.manifest[k] for k in ('dragAnimation','landingAnimation','quotaAnimation')]+[v for v in pet.work_slots if v]+pet.movement_slots
         for item in items:
-            frames=pet.load(item);assert abs(len(frames)-round(item['durationMs']*item.get('fps',30 if item.get('number')=='03' and item.get('movementAngleRange') else 24)/1000))<=1
+            frames=pet.load(item).wait();assert abs(len(frames)-round(item['durationMs']*item.get('fps',30 if item.get('number')=='03' and item.get('movementAngleRange') else 24)/1000))<=1
             assert frames[0].width()==pet.frame_size
-        assert len(pet.variants)==15 and len(items)==24+len(pet.manifest.get('additionalIdleAnimations',[]))+len(pet.movement_slots);report['checks'].append(f'{len(items)}段动画可解码，含移动差分')
+        # A replacement character can ship fewer clips than the original 35-clip set.
+        full_set=len(pet.manifest['variants'])>=15
+        assert not full_set or (len(pet.variants)==15 and len(items)==24+len(pet.manifest.get('additionalIdleAnimations',[]))+len(pet.movement_slots));report['checks'].append(f'{len(items)}段动画可解码，含移动差分')
         assert (root/'app/sounds/click.wav').is_file()
-        assert next(v for v in pet.variants if v['id']=='14') in items
+        assert not full_set or next(v for v in pet.variants if v['id']=='14') in items
         for item in items:
             assert 'renderScale' in item and 'renderOffset' in item
         report['checks'].append('全部动作尺寸校准字段齐全')
+        # Decoding every clip above takes long enough for a leisure action to fall due.
+        pet.note_interaction(cancel_movement=False)
         pet.play(pet.manifest['quotaAnimation'],'quota');pet.started=time.monotonic()-4.1;pet.animate();assert pet.mode=='idle'
         report['checks'].append('查询动作只播一次')
         press=SimpleNamespace(button=lambda:__import__('PySide6.QtCore',fromlist=['Qt']).Qt.MouseButton.LeftButton,globalPosition=lambda:QPointF(200,200))
@@ -74,7 +81,7 @@ def run(root):
             assert any(b.text()=='详情' for b in pet.bubble.findChildren(__import__('PySide6.QtWidgets',fromlist=['QPushButton']).QPushButton))
             assert chat.composer.size()==QSize(280,152)
             assert pet.mode=='task-celebration' and pet.current['id']=='18'
-            assert len(pet.interaction_animations())==20
+            assert not full_set or len(pet.interaction_animations())==20
             chat.toggle() if not chat.enabled else None
             pet.play(pet.work_slots[1],'working');assert chat.composer.isVisible()
             pet.say('自动工作不显示台词');assert not pet.bubble.isVisible()
@@ -89,8 +96,19 @@ def run(root):
         assert not pet.tick.isActive() and not pet.isVisible()
         pet.fullscreen_hidden=False;pet.apply_visibility();assert pet.isVisible()
         report['checks'].append('托盘菜单、全屏隐藏暂停与恢复正常（离线状态模拟）')
-        pet.play(pet.idles[0],'idle');pet.grab().save(str(root/'检查预览.png'));pet.close()
+        pet.play(pet.idles[0],'idle');pet.grab().save(str(output/'检查预览.png'));pet.close()
+        from characters import CHARACTERS
+        from pet_hub import PetHub
+        from control_panel import ControlPanel
+        hub=PetHub(Pet);panel=ControlPanel(hub);panel.refresh()
+        for other in hub.pets:
+            other.desktop_sync.stop();clips=[other.manifest['idle']]+other.manifest.get('additionalIdleAnimations',[])+other.variants+[v for v in other.work_slots if v]+other.movement_slots+[other.manifest[k] for k in ('dragAnimation','landingAnimation','quotaAnimation') if other.manifest.get(k)]
+            for item in clips:assert other.load(item).wait()
+            report['checks'].append(f'{other.character.agent}桌宠{len(clips)}段动画可解码，状态读取为{other.desktop_sync.status()["state"]}')
+        report['checks'].append(f'控制面板显示{len(panel.cards)}只桌宠')
+        panel.close()
+        hub.quit()
         report['passed']=True
     except Exception:report['error']=traceback.format_exc()
-    (root/('额度接口检查报告.json' if '--quota-only' in __import__('sys').argv else '检查报告.json')).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    (output/('额度接口检查报告.json' if '--quota-only' in __import__('sys').argv else '检查报告.json')).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     return 0 if report['passed'] else 1

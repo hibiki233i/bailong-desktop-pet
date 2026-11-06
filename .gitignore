@@ -6,6 +6,7 @@ app/*状态.json
 app/*.jsonl
 outputs/
 发布包/
+dist-macos/
 .build*/
 *.zip
 检查报告.json

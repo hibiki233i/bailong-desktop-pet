@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime
 
-from quota import find_codex
+from quota import find_codex, codex_env
 from version import VERSION
 
 PERSONA = ('你是GPT白龙娘桌宠中的白龙娘，是一位温柔、聪明、认真负责的白龙少女。'
@@ -100,7 +100,7 @@ class CodexSession:
         try:
             self.process = subprocess.Popen([find_codex(), 'app-server'], cwd=self.cwd,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, encoding='utf-8', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                text=True, encoding='utf-8', env=codex_env(), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         finally:
             if frozen_windows:
                 ctypes.windll.kernel32.SetDllDirectoryW(sys._MEIPASS)

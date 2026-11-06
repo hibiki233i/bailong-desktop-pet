@@ -38,6 +38,8 @@ def readonly(path):
 class DesktopTaskReader:
     def __init__(self,home=None):
         self.home=Path(home or os.environ.get('CODEX_HOME') or Path.home()/'.codex')
+    def available(self):
+        return (self.home/'state_5.sqlite').is_file()
     def snapshots(self,excluded=()):
         paths=(self.home/'state_5.sqlite',self.home/'thread_history_1.sqlite')
         if not all(p.is_file() for p in paths):return []
@@ -77,6 +79,16 @@ class DesktopTaskSync(QObject):
         self.timer=QTimer(self);self.timer.setInterval(1000);self.timer.timeout.connect(self.poll)
     def start(self):self.timer.start();self.poll()
     def stop(self):self.timer.stop()
+    def status(self):
+        """What the control panel shows; the same shape as the Claude observer."""
+        if not self.reader.available():return {'state':'offline','sessions':[],'open':0}
+        rows=[]
+        for key in self.running:
+            latest=self.known.get(key,{}).get('latest') or {}
+            waiting=latest.get('status') in ('waitingForApproval','waitingForInput') or bool(self.known.get(key,{}).get('warning'))
+            rows.append({'title':str(latest.get('title') or 'Codex 任务'),'state':'waiting' if waiting else 'busy','detail':str(latest.get('step') or '')})
+        state='waiting' if any(r['state']=='waiting' for r in rows) else ('busy' if rows else 'idle')
+        return {'state':state,'sessions':rows,'open':len(self.known)}
     def excluded(self):
         controller=self.pet.chat
         if controller:return {c.get('threadId') for c in controller.store.conversations if not c.get('desktopSync')}
@@ -152,7 +164,7 @@ class DesktopTaskSync(QObject):
                     was_running=bool(self.running);self.running.add(key)
                     if not was_running and not (self.pet.chat and self.pet.chat.running_turn):self.pet.task_started()
                     self._progress(key,'主人，我收到啦！','这就认真帮你处理 Codex 里的任务。',lambda k=key:self.details(k))
-            record=self.known[key]
+            record=self.known[key];record['latest']=snapshot
             fingerprint=(snapshot['status'],tuple(snapshot['messages']),snapshot['final'],str(snapshot['error']),tuple(snapshot['alerts']),snapshot['step'])
             if fingerprint==record['fingerprint']:
                 warning=record.get('warning')
