@@ -60,12 +60,12 @@ class DesktopTaskReader:
                             if text:
                                 if phase in ('final_answer','final'):final=str(text)
                                 else:messages.append(str(text));alerts=[]
-                            if questions and questions not in ('[]','null'):alerts.append((item_id,'主人，这一步需要你回答或确认，请到 Codex 查看。'))
+                            if questions and questions not in ('[]','null'):alerts.append((item_id,'主人，这一步需要你回答或确认，请到 Codex 查看。',True))
                         elif typ!='agentMessage':
                             if item_status in ('waitingForApproval','waitingForInput','requiresApproval'):
-                                alerts.append((item_id,'主人，这一步需要你确认权限或补充信息，请到 Codex 查看。'))
+                                alerts.append((item_id,'主人，这一步需要你确认权限或补充信息，请到 Codex 查看。',True))
                             elif item_status=='failed' or item_error or (exit_code not in (None,0)):
-                                alerts.append((item_id,problem_summary(item_error or failed_output,exit_code)))
+                                alerts.append((item_id,problem_summary(item_error or failed_output,exit_code),False))
                             elif item_status in ('inProgress','running'):
                                 steps.append({'commandExecution':'正在执行操作','fileChange':'正在修改文件','mcpToolCall':'正在调用工具','webSearch':'正在查阅资料','imageGeneration':'正在生成图片','imageView':'正在查看图片'}.get(typ,'正在处理'))
                     result.append(dict(key=actual+':'+turn,thread=logical,actual=actual,turn=turn,title=title,cwd=cwd,status=status,error=error,started=started or 0,completed=completed,messages=messages,final=final,alerts=alerts,step=steps[-1] if steps else ''))
@@ -85,7 +85,8 @@ class DesktopTaskSync(QObject):
         rows=[]
         for key in self.running:
             latest=self.known.get(key,{}).get('latest') or {}
-            waiting=latest.get('status') in ('waitingForApproval','waitingForInput') or bool(self.known.get(key,{}).get('warning'))
+            # A failed command is an alert too, but Codex keeps working and needs nothing from the user.
+            waiting=latest.get('status') in ('waitingForApproval','waitingForInput') or any(alert[2] for alert in latest.get('alerts',()))
             rows.append({'title':str(latest.get('title') or 'Codex 任务'),'state':'waiting' if waiting else 'busy','detail':str(latest.get('step') or '')})
         state='waiting' if any(r['state']=='waiting' for r in rows) else ('busy' if rows else 'idle')
         return {'state':state,'sessions':rows,'open':len(self.known)}
@@ -132,7 +133,7 @@ class DesktopTaskSync(QObject):
             record.update(chat_id=chat['id'],chat=chat,turn=chat['turns'][-1])
             record['seen']={tuple(s) for s in record['turn'].get('syncNotices',[])}
             record['repeat_times']=record['turn'].get('syncRepeatTimes',{})
-        turn=record['turn'];turn['events']=snapshot['messages'][-100:]+[text for _,text in snapshot['alerts']]
+        turn=record['turn'];turn['events']=snapshot['messages'][-100:]+[alert[1] for alert in snapshot['alerts']]
         turn['output']=snapshot['final'];turn['result']=snapshot['final']
         turn['status']='running' if snapshot['status'] in ACTIVE else snapshot['status']
         if snapshot['error']:turn['error']=str(snapshot['error'])
@@ -177,7 +178,7 @@ class DesktopTaskSync(QObject):
             record['fingerprint']=fingerprint;record['last_change']=self.clock();self.history(snapshot,record)
             latest=snapshot['messages'][-1] if snapshot['messages'] else ''
             if latest!=record.get('warning_progress','') or snapshot['status']=='completed':record.pop('warning',None)
-            for aid,text in snapshot['alerts']:
+            for aid,text,_ in snapshot['alerts']:
                 if aid not in record['alerts']:
                     record['alerts'].add(aid);record['warning']=('主人，有个情况要告诉你。',text);record['warning_progress']=latest
                     self._progress(key,'主人，有个情况要告诉你。',text,lambda k=key:self.details(k),repeat=True);record['last_notice']=self.clock();record['last_alert']=self.clock()

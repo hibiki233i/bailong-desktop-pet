@@ -25,7 +25,29 @@ class FakePet(QObject):
  def __init__(self):
   super().__init__();self.chat=None;self.settings=Mock();self.settings.value.return_value=True
   for name in ('task_started','task_finished','task_progress','task_completed','task_result'):setattr(self,name,Mock())
+class AlertKinds(unittest.TestCase):
+ def test_reader_marks_only_requests_for_the_user(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);logical='11111111-1111-1111-1111-111111111111';actual='22222222-2222-2222-2222-222222222222'
+   c=sqlite3.connect(root/'state_5.sqlite');c.execute('CREATE TABLE threads(id,rollout_path,title,cwd,archived,thread_source,source,updated_at)')
+   c.execute('INSERT INTO threads VALUES(?,?,?,?,0,?,?,?)',(logical,'rollout-'+logical+'_'+actual+'.jsonl','测试任务',tmp,'user','vscode',int(time.time())));c.commit();c.close()
+   c=sqlite3.connect(root/'thread_history_1.sqlite');c.execute('CREATE TABLE thread_turns(thread_id,turn_id,status,error_json,started_at,completed_at)');c.execute('CREATE TABLE thread_items(thread_id,turn_id,item_id,item_type,item_json,rollout_ordinal)')
+   c.execute('INSERT INTO thread_turns VALUES(?,?,?,NULL,?,NULL)',(actual,'turn','inProgress',int(time.time())))
+   items=[{'type':'commandExecution','status':'failed','exitCode':1},{'type':'commandExecution','status':'waitingForApproval'},{'type':'agentMessage','phase':'commentary','questions':[{'text':'继续吗'}]}]
+   for i,item in enumerate(items):c.execute('INSERT INTO thread_items VALUES(?,?,?,?,?,?)',(actual,'turn',str(i),item['type'],json.dumps(item),i))
+   c.commit();c.close()
+   self.assertEqual([alert[2] for alert in DesktopTaskReader(root).snapshots()[0]['alerts']],[False,True,True])
+
 class SyncTests(unittest.TestCase):
+ def test_failed_command_in_a_running_task_is_not_a_request(self):
+  self.sync.poll();self.now[0]+=5;self.r['alerts']=[('cmd','命令失败，退出码 1',False)];self.sync.poll()
+  status=self.sync.status();self.assertEqual(status['state'],'busy');self.assertEqual(status['sessions'][0]['state'],'busy')
+  self.assertEqual(self.pet.task_progress.call_args.args[1],'命令失败，退出码 1')
+ def test_request_shows_waiting_until_it_is_answered(self):
+  self.sync.poll();self.now[0]+=5;self.r['alerts']=[('cmd','命令失败',False),('ask','请到 Codex 确认',True)];self.sync.poll()
+  self.assertEqual(self.sync.status()['state'],'waiting')
+  self.now[0]+=5;self.r['alerts']=[('cmd','命令失败',False)];self.sync.poll()
+  self.assertEqual(self.sync.status()['state'],'busy')
  def setUp(self):
   self.now=[1000.];self.pet=FakePet();self.reader=Mock();self.sync=DesktopTaskSync(self.pet,self.reader,lambda:self.now[0]);self.sync.history=Mock();self.sync.excluded=Mock(return_value=set())
   self.r=dict(key='t:a',thread='t',actual='t',turn='a',title='任务',cwd='.',status='inProgress',error=None,started=1000,messages=[],final='',alerts=[],step='')
@@ -39,7 +61,7 @@ class SyncTests(unittest.TestCase):
   for status in ('failed','interrupted'):
    self.setUp();self.sync.poll();self.r.update(status=status,error='连接失败');self.sync.poll();self.pet.task_completed.assert_not_called();self.assertIn('还没有完成',self.pet.task_progress.call_args.args[0])
  def test_alert_not_overwritten_and_read_failure_notice(self):
-  self.sync.poll();self.now[0]+=5;self.r['alerts']=[('approval','请到 Codex 确认')];self.sync.poll();self.assertEqual(self.pet.task_progress.call_args.args[1],'请到 Codex 确认')
+  self.sync.poll();self.now[0]+=5;self.r['alerts']=[('approval','请到 Codex 确认',True)];self.sync.poll();self.assertEqual(self.pet.task_progress.call_args.args[1],'请到 Codex 确认')
   self.reader.snapshots.side_effect=sqlite3.OperationalError('locked')
   for i in range(10):self.sync.poll()
   self.assertIn('同步',self.pet.task_progress.call_args.args[0]);self.pet.task_completed.assert_not_called()
@@ -62,7 +84,7 @@ class SyncTests(unittest.TestCase):
   self.r['step']='正在修改文件';self.sync.poll()
   self.assertEqual(self.pet.task_progress.call_count,count)
  def test_unresolved_warning_repeats_every_five_minutes_until_progress(self):
-  self.sync.poll();self.now[0]+=5;self.r['alerts']=[('a','需要你确认')];self.sync.poll()
+  self.sync.poll();self.now[0]+=5;self.r['alerts']=[('a','需要你确认',True)];self.sync.poll()
   self.pet.task_progress.reset_mock()
   self.now[0]+=299;self.sync.poll();self.pet.task_progress.assert_not_called()
   self.now[0]+=1;self.sync.poll();self.pet.task_progress.assert_called_once()
